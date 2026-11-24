@@ -6,9 +6,11 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const path = require("path");
 
 const app = express();
 
+// Middleware
 app.use(express.json({ limit: "1mb" }));
 
 // Website connection permissions
@@ -24,9 +26,13 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
+
     return callback(new Error("Origin not allowed"));
   }
 }));
+
+// Serve frontend website from public folder
+app.use(express.static(path.join(__dirname, "public")));
 
 // Citizen database structure
 const citizenSchema = new mongoose.Schema({
@@ -75,9 +81,9 @@ function createToken(id, role) {
   );
 }
 
-// Home
+// Home route - show complete website
 app.get("/", (req, res) => {
-  res.send("Nal Jal Yojana API is running!");
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // Health check
@@ -138,7 +144,10 @@ app.post("/api/auth/register", async (req, res) => {
       .toLowerCase();
 
     const existing = await Citizen.findOne({
-      $or: [{ mobile: String(mobile) }, { email: finalEmail }]
+      $or: [
+        { mobile: String(mobile) },
+        { email: finalEmail }
+      ]
     });
 
     if (existing) {
@@ -158,7 +167,11 @@ app.post("/api/auth/register", async (req, res) => {
       aadhaarMasked: aadhaar
         ? "XXXX-XXXX-" + String(aadhaar).slice(-4)
         : "",
-      house, block, village, city, pincode,
+      house,
+      block,
+      village,
+      city,
+      pincode,
       address: `मकान ${house}, ब्लॉक ${block}, ग्राम ${village}, पंचायत ${panchayat}, ${city} - ${pincode}`,
       panchayat,
       ward: String(ward).padStart(2, "0"),
@@ -178,6 +191,7 @@ app.post("/api/auth/register", async (req, res) => {
 
   } catch (error) {
     console.error("Registration error:", error.message);
+
     res.status(500).json({
       success: false,
       message: "Registration failed"
@@ -197,7 +211,9 @@ app.post("/api/auth/citizen-login", async (req, res) => {
       });
     }
 
-    const loginValue = String(mobileOrEmail).trim().toLowerCase();
+    const loginValue = String(mobileOrEmail)
+      .trim()
+      .toLowerCase();
 
     const citizen = await Citizen.findOne({
       $or: [
@@ -236,6 +252,7 @@ app.post("/api/auth/citizen-login", async (req, res) => {
 
   } catch (error) {
     console.error("Citizen login error:", error.message);
+
     res.status(500).json({
       success: false,
       message: "Login failed"
@@ -291,6 +308,7 @@ app.post("/api/auth/admin-login", (req, res) => {
 
   } catch (error) {
     console.error("Admin login error:", error.message);
+
     res.status(500).json({
       success: false,
       message: "Admin login failed"
