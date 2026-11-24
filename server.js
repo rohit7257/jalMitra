@@ -16,6 +16,7 @@ app.use(express.json({ limit: "1mb" }));
 // Website connection permissions
 const allowedOrigins = [
   "https://rohit7257.github.io",
+  "https://jalmitra-api-gilo.onrender.com",
   "http://localhost:5500",
   "http://127.0.0.1:5500",
   "http://localhost:5173"
