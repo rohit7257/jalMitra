@@ -11,7 +11,6 @@ const path = require("path");
 const app = express();
 
 // Middleware
-// Frontend documents are limited to 500 KB each.
 app.use(express.json({ limit: "5mb" }));
 
 const allowedOrigins = [
@@ -61,7 +60,12 @@ const Citizen = mongoose.model("Citizen", citizenSchema);
 // New connection applications
 const applicationSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
-  citizenId: { type: mongoose.Schema.Types.ObjectId, ref: "Citizen", required: true, index: true },
+  citizenId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Citizen",
+    required: true,
+    index: true
+  },
   applicantName: { type: String, required: true },
   fatherName: String,
   mobile: { type: String, required: true },
@@ -89,7 +93,12 @@ const Application = mongoose.model("Application", applicationSchema);
 // Citizen grievances
 const grievanceSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true, index: true },
-  citizenId: { type: mongoose.Schema.Types.ObjectId, ref: "Citizen", required: true, index: true },
+  citizenId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Citizen",
+    required: true,
+    index: true
+  },
   citizenName: String,
   fatherName: String,
   mobile: String,
@@ -505,17 +514,34 @@ app.post("/api/auth/admin-login", (req, res) => {
 
 // Citizen submits a new application
 app.post("/api/applications", authenticate, citizenOnly, async (req, res) => {
+  console.log("[APPLICATION] POST request received");
+
   try {
     const citizen = req.user.citizen;
+
+    console.log("[APPLICATION] Citizen authenticated:", citizen._id);
+
     const {
-      id, applicantName, mobile, aadhaar,
-      panchayat, ward, address, connectionType, documents
+      id,
+      applicantName,
+      mobile,
+      aadhaar,
+      panchayat,
+      ward,
+      address,
+      connectionType,
+      documents
     } = req.body;
 
     if (
-      !applicantName || !panchayat || !ward ||
-      !address || !connectionType
+      !applicantName ||
+      !panchayat ||
+      !ward ||
+      !address ||
+      !connectionType
     ) {
+      console.log("[APPLICATION] Required fields missing");
+
       return res.status(400).json({
         success: false,
         message: "Please fill all application fields"
@@ -536,71 +562,95 @@ app.post("/api/applications", authenticate, citizenOnly, async (req, res) => {
       !validateDocument(docs.voterId) ||
       !validateDocument(docs.pan)
     ) {
+      console.log("[APPLICATION] Document validation failed");
+
       return res.status(400).json({
         success: false,
-        message: "Invalid document. Please upload PDF, JPG, PNG or WEBP up to 500 KB."
+        message: "Invalid document. Upload PDF, JPG, PNG or WEBP up to 500 KB."
       });
     }
 
+    // Save application in MongoDB
     const application = await Application.create({
       id: id || makeId("NJ-APP"),
       citizenId: citizen._id,
+
       applicantName: citizen.name,
       fatherName: citizen.fatherName,
       mobile: citizen.mobile,
       email: citizen.email,
 
-      // Store masked Aadhaar only, not the full Aadhaar number.
-      aadhaar: aadhaar && /^[0-9]{12}$/.test(String(aadhaar))
-        ? "XXXX-XXXX-" + String(aadhaar).slice(-4)
-        : "",
+      // Store masked Aadhaar only
+      aadhaar:
+        aadhaar && /^[0-9]{12}$/.test(String(aadhaar))
+          ? "XXXX-XXXX-" + String(aadhaar).slice(-4)
+          : "",
 
       panchayat: citizen.panchayat || panchayat,
       ward: citizen.ward || ward,
       address,
       connectionType,
+
       documents: {
         aadhaar: docs.aadhaar || null,
         voterId: docs.voterId || null,
         pan: docs.pan || null
       },
+
       date: today(),
       status: "निरीक्षण हेतु लंबित (Pending)"
     });
 
-    res.status(201).json({
+    console.log(
+      "[APPLICATION] SAVED SUCCESSFULLY:",
+      application.id
+    );
+
+    return res.status(201).json({
       success: true,
       message: "Application submitted successfully",
       item: application
     });
 
   } catch (error) {
-    console.error("Application submit error:", error.message);
+    console.error("[APPLICATION] SAVE FAILED:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Application could not be submitted"
+      message: "Application could not be saved: " + error.message
     });
   }
 });
 
-// Admin sees all applications; citizen sees only own applications
+// Admin sees all applications;
+// Citizen sees only their own applications
 app.get("/api/applications", authenticate, async (req, res) => {
   try {
-    const filter = req.user.role === "admin"
-      ? {}
-      : { citizenId: req.user.id };
+    const filter =
+      req.user.role === "admin"
+        ? {}
+        : { citizenId: req.user.id };
 
     const items = await Application.find(filter)
       .sort({ createdAt: -1 })
       .lean();
 
-    res.json({ success: true, items });
+    console.log(
+      "[APPLICATION] Records fetched:",
+      items.length,
+      "Role:",
+      req.user.role
+    );
+
+    return res.json({
+      success: true,
+      items
+    });
 
   } catch (error) {
-    console.error("Application fetch error:", error.message);
+    console.error("[APPLICATION] FETCH FAILED:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Applications could not be loaded"
     });
@@ -608,50 +658,58 @@ app.get("/api/applications", authenticate, async (req, res) => {
 });
 
 // Admin approves or rejects an application
-app.patch("/api/applications/:id", authenticate, adminOnly, async (req, res) => {
-  try {
-    const { status, remarks } = req.body;
+app.patch(
+  "/api/applications/:id",
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const { status, remarks } = req.body;
 
-    if (!status) {
-      return res.status(400).json({
-        success: false,
-        message: "Application status is required"
-      });
-    }
+      if (!status) {
+        return res.status(400).json({
+          success: false,
+          message: "Application status is required"
+        });
+      }
 
-    const item = await Application.findOneAndUpdate(
-      { id: req.params.id },
-      {
-        $set: {
-          status: String(status),
-          remarks: String(remarks || "")
+      const item = await Application.findOneAndUpdate(
+        { id: req.params.id },
+        {
+          $set: {
+            status: String(status),
+            remarks: String(remarks || "")
+          }
+        },
+        {
+          new: true,
+          runValidators: true
         }
-      },
-      { new: true, runValidators: true }
-    );
+      );
 
-    if (!item) {
-      return res.status(404).json({
+      if (!item) {
+        return res.status(404).json({
+          success: false,
+          message: "Application not found"
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Application updated",
+        item
+      });
+
+    } catch (error) {
+      console.error("[APPLICATION] UPDATE FAILED:", error);
+
+      return res.status(500).json({
         success: false,
-        message: "Application not found"
+        message: "Application update failed"
       });
     }
-
-    res.json({
-      success: true,
-      message: "Application updated",
-      item
-    });
-
-  } catch (error) {
-    console.error("Application update error:", error.message);
-
-    res.status(500).json({
-      success: false,
-      message: "Application update failed"
-    });
   }
-});
+);
 
 // --------------------------------------------------
 // GRIEVANCE / COMPLAINT ROUTES
@@ -661,7 +719,13 @@ app.patch("/api/applications/:id", authenticate, adminOnly, async (req, res) => 
 app.post("/api/grievances", authenticate, citizenOnly, async (req, res) => {
   try {
     const citizen = req.user.citizen;
-    const { category, location, description, priority } = req.body;
+
+    const {
+      category,
+      location,
+      description,
+      priority
+    } = req.body;
 
     if (!location || !description || !category) {
       return res.status(400).json({
@@ -689,6 +753,8 @@ app.post("/api/grievances", authenticate, citizenOnly, async (req, res) => {
       date: today()
     });
 
+    console.log("[GRIEVANCE] SAVED:", item.id);
+
     res.status(201).json({
       success: true,
       message: "Grievance registered successfully",
@@ -696,7 +762,7 @@ app.post("/api/grievances", authenticate, citizenOnly, async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Grievance submit error:", error.message);
+    console.error("[GRIEVANCE] SAVE FAILED:", error);
 
     res.status(500).json({
       success: false,
@@ -708,18 +774,22 @@ app.post("/api/grievances", authenticate, citizenOnly, async (req, res) => {
 // Admin sees all complaints; citizen sees only own complaints
 app.get("/api/grievances", authenticate, async (req, res) => {
   try {
-    const filter = req.user.role === "admin"
-      ? {}
-      : { citizenId: req.user.id };
+    const filter =
+      req.user.role === "admin"
+        ? {}
+        : { citizenId: req.user.id };
 
     const items = await Grievance.find(filter)
       .sort({ createdAt: -1 })
       .lean();
 
-    res.json({ success: true, items });
+    res.json({
+      success: true,
+      items
+    });
 
   } catch (error) {
-    console.error("Grievance fetch error:", error.message);
+    console.error("[GRIEVANCE] FETCH FAILED:", error);
 
     res.status(500).json({
       success: false,
@@ -729,51 +799,63 @@ app.get("/api/grievances", authenticate, async (req, res) => {
 });
 
 // Admin updates complaint status
-app.patch("/api/grievances/:id", authenticate, adminOnly, async (req, res) => {
-  try {
-    const { status, assignedTo, remarks } = req.body;
+app.patch(
+  "/api/grievances/:id",
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const {
+        status,
+        assignedTo,
+        remarks
+      } = req.body;
 
-    if (!status) {
-      return res.status(400).json({
-        success: false,
-        message: "Grievance status is required"
-      });
-    }
+      if (!status) {
+        return res.status(400).json({
+          success: false,
+          message: "Grievance status is required"
+        });
+      }
 
-    const item = await Grievance.findOneAndUpdate(
-      { id: req.params.id },
-      {
-        $set: {
-          status: String(status),
-          assignedTo: String(assignedTo || ""),
-          remarks: String(remarks || "")
+      const item = await Grievance.findOneAndUpdate(
+        { id: req.params.id },
+        {
+          $set: {
+            status: String(status),
+            assignedTo: String(assignedTo || ""),
+            remarks: String(remarks || "")
+          }
+        },
+        {
+          new: true,
+          runValidators: true
         }
-      },
-      { new: true, runValidators: true }
-    );
+      );
 
-    if (!item) {
-      return res.status(404).json({
+      if (!item) {
+        return res.status(404).json({
+          success: false,
+          message: "Grievance not found"
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Grievance updated",
+        item
+      });
+
+    } catch (error) {
+      console.error("[GRIEVANCE] UPDATE FAILED:", error);
+
+      res.status(500).json({
         success: false,
-        message: "Grievance not found"
+        message: "Grievance update failed"
       });
     }
-
-    res.json({
-      success: true,
-      message: "Grievance updated",
-      item
-    });
-
-  } catch (error) {
-    console.error("Grievance update error:", error.message);
-
-    res.status(500).json({
-      success: false,
-      message: "Grievance update failed"
-    });
   }
-});
+);
 
 // --------------------------------------------------
 // PUBLIC NOTICE ROUTES
@@ -792,7 +874,7 @@ app.get("/api/notices/latest", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Notice fetch error:", error.message);
+    console.error("[NOTICE] FETCH FAILED:", error);
 
     res.status(500).json({
       success: false,
@@ -828,7 +910,7 @@ app.post("/api/notices", authenticate, adminOnly, async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Notice publish error:", error.message);
+    console.error("[NOTICE] SAVE FAILED:", error);
 
     res.status(500).json({
       success: false,
@@ -842,7 +924,7 @@ app.post("/api/notices", authenticate, adminOnly, async (req, res) => {
 // --------------------------------------------------
 
 app.use((err, req, res, next) => {
-  console.error("Server middleware error:", err.message);
+  console.error("[SERVER MIDDLEWARE ERROR]:", err);
 
   if (err.message === "Origin not allowed") {
     return res.status(403).json({
@@ -873,7 +955,9 @@ const PORT = process.env.PORT || 5000;
 async function startServer() {
   try {
     if (!process.env.MONGODB_URI || !process.env.JWT_SECRET) {
-      throw new Error("MONGODB_URI or JWT_SECRET is missing in environment settings");
+      throw new Error(
+        "MONGODB_URI or JWT_SECRET is missing in environment settings"
+      );
     }
 
     await mongoose.connect(process.env.MONGODB_URI);
@@ -885,7 +969,7 @@ async function startServer() {
     });
 
   } catch (error) {
-    console.error("Server Error:", error.message);
+    console.error("Server Error:", error);
     process.exit(1);
   }
 }
