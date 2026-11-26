@@ -11,9 +11,9 @@ const path = require("path");
 const app = express();
 
 // Middleware
-app.use(express.json({ limit: "1mb" }));
+// Frontend documents are limited to 500 KB each.
+app.use(express.json({ limit: "5mb" }));
 
-// Website connection permissions
 const allowedOrigins = [
   "https://rohit7257.github.io",
   "https://jalmitra-api-gilo.onrender.com",
@@ -27,15 +27,16 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-
     return callback(new Error("Origin not allowed"));
   }
 }));
 
-// Serve frontend website from public folder
 app.use(express.static(path.join(__dirname, "public")));
 
-// Citizen database structure
+// --------------------------------------------------
+// DATABASE MODELS
+// --------------------------------------------------
+
 const citizenSchema = new mongoose.Schema({
   citizenId: { type: String, required: true, unique: true },
   name: { type: String, required: true },
@@ -57,10 +58,77 @@ const citizenSchema = new mongoose.Schema({
 
 const Citizen = mongoose.model("Citizen", citizenSchema);
 
-// Safe citizen information
+// New connection applications
+const applicationSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  citizenId: { type: mongoose.Schema.Types.ObjectId, ref: "Citizen", required: true, index: true },
+  applicantName: { type: String, required: true },
+  fatherName: String,
+  mobile: { type: String, required: true },
+  email: String,
+  aadhaar: String,
+  panchayat: String,
+  ward: String,
+  address: String,
+  connectionType: String,
+  documents: {
+    aadhaar: { type: mongoose.Schema.Types.Mixed, default: null },
+    voterId: { type: mongoose.Schema.Types.Mixed, default: null },
+    pan: { type: mongoose.Schema.Types.Mixed, default: null }
+  },
+  date: String,
+  status: {
+    type: String,
+    default: "निरीक्षण हेतु लंबित (Pending)"
+  },
+  remarks: { type: String, default: "" }
+}, { timestamps: true });
+
+const Application = mongoose.model("Application", applicationSchema);
+
+// Citizen grievances
+const grievanceSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  citizenId: { type: mongoose.Schema.Types.ObjectId, ref: "Citizen", required: true, index: true },
+  citizenName: String,
+  fatherName: String,
+  mobile: String,
+  email: String,
+  panchayat: String,
+  ward: String,
+  category: String,
+  location: String,
+  description: String,
+  priority: String,
+  status: {
+    type: String,
+    default: "नई शिकायत (Pending)"
+  },
+  assignedTo: { type: String, default: "" },
+  remarks: { type: String, default: "" },
+  date: String
+}, { timestamps: true });
+
+const Grievance = mongoose.model("Grievance", grievanceSchema);
+
+// Public notices
+const noticeSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  title: { type: String, required: true },
+  body: { type: String, required: true },
+  date: String,
+  createdBy: String
+}, { timestamps: true });
+
+const Notice = mongoose.model("Notice", noticeSchema);
+
+// --------------------------------------------------
+// COMMON HELPERS
+// --------------------------------------------------
+
 function safeCitizen(citizen) {
   return {
-    id: citizen._id,
+    id: String(citizen._id),
     citizenId: citizen.citizenId,
     name: citizen.name,
     fatherName: citizen.fatherName,
@@ -73,7 +141,6 @@ function safeCitizen(citizen) {
   };
 }
 
-// Create login token
 function createToken(id, role) {
   return jwt.sign(
     { id: String(id), role },
@@ -82,12 +149,120 @@ function createToken(id, role) {
   );
 }
 
-// Home route - show complete website
+function today() {
+  return new Date().toLocaleDateString("en-IN");
+}
+
+function makeId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+// Check JWT token
+async function authenticate(req, res, next) {
+  try {
+    const header = req.headers.authorization || "";
+
+    if (!header.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        message: "Please login first"
+      });
+    }
+
+    const token = header.slice(7);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (decoded.role === "admin") {
+      req.user = {
+        id: decoded.id,
+        role: "admin"
+      };
+      return next();
+    }
+
+    if (decoded.role !== "citizen") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid login role"
+      });
+    }
+
+    const citizen = await Citizen.findById(decoded.id);
+
+    if (!citizen) {
+      return res.status(401).json({
+        success: false,
+        message: "Citizen account not found"
+      });
+    }
+
+    req.user = {
+      id: String(citizen._id),
+      role: "citizen",
+      citizen
+    };
+
+    next();
+
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      message: "Session expired or invalid. Please login again."
+    });
+  }
+}
+
+function adminOnly(req, res, next) {
+  if (!req.user || req.user.role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      message: "Admin access required"
+    });
+  }
+  next();
+}
+
+function citizenOnly(req, res, next) {
+  if (!req.user || req.user.role !== "citizen") {
+    return res.status(403).json({
+      success: false,
+      message: "Citizen login required"
+    });
+  }
+  next();
+}
+
+// Validate uploaded document data
+function validateDocument(doc) {
+  if (!doc) return true;
+
+  const allowedTypes = [
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp"
+  ];
+
+  if (
+    typeof doc !== "object" ||
+    !allowedTypes.includes(doc.type) ||
+    typeof doc.dataUrl !== "string" ||
+    doc.dataUrl.length > 750000
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+// --------------------------------------------------
+// WEBSITE AND HEALTH ROUTES
+// --------------------------------------------------
+
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Health check
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
@@ -98,7 +273,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Citizen Registration
+// --------------------------------------------------
+// CITIZEN REGISTRATION
+// --------------------------------------------------
+
 app.post("/api/auth/register", async (req, res) => {
   try {
     const {
@@ -126,7 +304,7 @@ app.post("/api/auth/register", async (req, res) => {
       });
     }
 
-    if (password.length < 6) {
+    if (String(password).length < 6) {
       return res.status(400).json({
         success: false,
         message: "Password must be at least 6 characters"
@@ -200,7 +378,10 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-// Citizen Login
+// --------------------------------------------------
+// CITIZEN LOGIN
+// --------------------------------------------------
+
 app.post("/api/auth/citizen-login", async (req, res) => {
   try {
     const { mobileOrEmail, password } = req.body;
@@ -212,9 +393,7 @@ app.post("/api/auth/citizen-login", async (req, res) => {
       });
     }
 
-    const loginValue = String(mobileOrEmail)
-      .trim()
-      .toLowerCase();
+    const loginValue = String(mobileOrEmail).trim().toLowerCase();
 
     const citizen = await Citizen.findOne({
       $or: [
@@ -261,7 +440,10 @@ app.post("/api/auth/citizen-login", async (req, res) => {
   }
 });
 
-// Admin Login
+// --------------------------------------------------
+// ADMIN LOGIN
+// --------------------------------------------------
+
 app.post("/api/auth/admin-login", (req, res) => {
   try {
     const { email, password } = req.body;
@@ -317,13 +499,381 @@ app.post("/api/auth/admin-login", (req, res) => {
   }
 });
 
-// Start server
+// --------------------------------------------------
+// NEW CONNECTION APPLICATION ROUTES
+// --------------------------------------------------
+
+// Citizen submits a new application
+app.post("/api/applications", authenticate, citizenOnly, async (req, res) => {
+  try {
+    const citizen = req.user.citizen;
+    const {
+      id, applicantName, mobile, aadhaar,
+      panchayat, ward, address, connectionType, documents
+    } = req.body;
+
+    if (
+      !applicantName || !panchayat || !ward ||
+      !address || !connectionType
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Please fill all application fields"
+      });
+    }
+
+    if (mobile && String(mobile) !== citizen.mobile) {
+      return res.status(403).json({
+        success: false,
+        message: "Application mobile number must match your registered number"
+      });
+    }
+
+    const docs = documents || {};
+
+    if (
+      !validateDocument(docs.aadhaar) ||
+      !validateDocument(docs.voterId) ||
+      !validateDocument(docs.pan)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid document. Please upload PDF, JPG, PNG or WEBP up to 500 KB."
+      });
+    }
+
+    const application = await Application.create({
+      id: id || makeId("NJ-APP"),
+      citizenId: citizen._id,
+      applicantName: citizen.name,
+      fatherName: citizen.fatherName,
+      mobile: citizen.mobile,
+      email: citizen.email,
+
+      // Store masked Aadhaar only, not the full Aadhaar number.
+      aadhaar: aadhaar && /^[0-9]{12}$/.test(String(aadhaar))
+        ? "XXXX-XXXX-" + String(aadhaar).slice(-4)
+        : "",
+
+      panchayat: citizen.panchayat || panchayat,
+      ward: citizen.ward || ward,
+      address,
+      connectionType,
+      documents: {
+        aadhaar: docs.aadhaar || null,
+        voterId: docs.voterId || null,
+        pan: docs.pan || null
+      },
+      date: today(),
+      status: "निरीक्षण हेतु लंबित (Pending)"
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Application submitted successfully",
+      item: application
+    });
+
+  } catch (error) {
+    console.error("Application submit error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Application could not be submitted"
+    });
+  }
+});
+
+// Admin sees all applications; citizen sees only own applications
+app.get("/api/applications", authenticate, async (req, res) => {
+  try {
+    const filter = req.user.role === "admin"
+      ? {}
+      : { citizenId: req.user.id };
+
+    const items = await Application.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({ success: true, items });
+
+  } catch (error) {
+    console.error("Application fetch error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Applications could not be loaded"
+    });
+  }
+});
+
+// Admin approves or rejects an application
+app.patch("/api/applications/:id", authenticate, adminOnly, async (req, res) => {
+  try {
+    const { status, remarks } = req.body;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: "Application status is required"
+      });
+    }
+
+    const item = await Application.findOneAndUpdate(
+      { id: req.params.id },
+      {
+        $set: {
+          status: String(status),
+          remarks: String(remarks || "")
+        }
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: "Application not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Application updated",
+      item
+    });
+
+  } catch (error) {
+    console.error("Application update error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Application update failed"
+    });
+  }
+});
+
+// --------------------------------------------------
+// GRIEVANCE / COMPLAINT ROUTES
+// --------------------------------------------------
+
+// Citizen submits a complaint
+app.post("/api/grievances", authenticate, citizenOnly, async (req, res) => {
+  try {
+    const citizen = req.user.citizen;
+    const { category, location, description, priority } = req.body;
+
+    if (!location || !description || !category) {
+      return res.status(400).json({
+        success: false,
+        message: "Category, location and description are required"
+      });
+    }
+
+    const item = await Grievance.create({
+      id: makeId("NJ-GRV"),
+      citizenId: citizen._id,
+      citizenName: citizen.name,
+      fatherName: citizen.fatherName,
+      mobile: citizen.mobile,
+      email: citizen.email,
+      panchayat: citizen.panchayat || "",
+      ward: citizen.ward || "",
+      category,
+      location,
+      description,
+      priority: priority || "सामान्य (Normal)",
+      status: "नई शिकायत (Pending)",
+      assignedTo: "",
+      remarks: "",
+      date: today()
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Grievance registered successfully",
+      item
+    });
+
+  } catch (error) {
+    console.error("Grievance submit error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Grievance could not be registered"
+    });
+  }
+});
+
+// Admin sees all complaints; citizen sees only own complaints
+app.get("/api/grievances", authenticate, async (req, res) => {
+  try {
+    const filter = req.user.role === "admin"
+      ? {}
+      : { citizenId: req.user.id };
+
+    const items = await Grievance.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({ success: true, items });
+
+  } catch (error) {
+    console.error("Grievance fetch error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Grievances could not be loaded"
+    });
+  }
+});
+
+// Admin updates complaint status
+app.patch("/api/grievances/:id", authenticate, adminOnly, async (req, res) => {
+  try {
+    const { status, assignedTo, remarks } = req.body;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: "Grievance status is required"
+      });
+    }
+
+    const item = await Grievance.findOneAndUpdate(
+      { id: req.params.id },
+      {
+        $set: {
+          status: String(status),
+          assignedTo: String(assignedTo || ""),
+          remarks: String(remarks || "")
+        }
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: "Grievance not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Grievance updated",
+      item
+    });
+
+  } catch (error) {
+    console.error("Grievance update error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Grievance update failed"
+    });
+  }
+});
+
+// --------------------------------------------------
+// PUBLIC NOTICE ROUTES
+// --------------------------------------------------
+
+// Anyone can see the latest notice
+app.get("/api/notices/latest", async (req, res) => {
+  try {
+    const item = await Notice.findOne()
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      item: item || null
+    });
+
+  } catch (error) {
+    console.error("Notice fetch error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Notice could not be loaded"
+    });
+  }
+});
+
+// Admin publishes a notice
+app.post("/api/notices", authenticate, adminOnly, async (req, res) => {
+  try {
+    const { title, body } = req.body;
+
+    if (!title || !body) {
+      return res.status(400).json({
+        success: false,
+        message: "Notice title and message are required"
+      });
+    }
+
+    const item = await Notice.create({
+      id: makeId("NJ-NOTICE"),
+      title: String(title).trim(),
+      body: String(body).trim(),
+      date: today(),
+      createdBy: req.user.id
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Notice published successfully",
+      item
+    });
+
+  } catch (error) {
+    console.error("Notice publish error:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Notice could not be published"
+    });
+  }
+});
+
+// --------------------------------------------------
+// ERROR HANDLER
+// --------------------------------------------------
+
+app.use((err, req, res, next) => {
+  console.error("Server middleware error:", err.message);
+
+  if (err.message === "Origin not allowed") {
+    return res.status(403).json({
+      success: false,
+      message: "Website origin not allowed"
+    });
+  }
+
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({
+      success: false,
+      message: "Request is too large. Please check uploaded documents."
+    });
+  }
+
+  res.status(500).json({
+    success: false,
+    message: "Internal server error"
+  });
+});
+
+// --------------------------------------------------
+// START SERVER
+// --------------------------------------------------
+
 const PORT = process.env.PORT || 5000;
 
 async function startServer() {
   try {
     if (!process.env.MONGODB_URI || !process.env.JWT_SECRET) {
-      throw new Error("MONGODB_URI or JWT_SECRET is missing in .env");
+      throw new Error("MONGODB_URI or JWT_SECRET is missing in environment settings");
     }
 
     await mongoose.connect(process.env.MONGODB_URI);
